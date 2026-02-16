@@ -9,17 +9,49 @@ class SheetHelper
 
     init() 
     {
-        this.namedRanges = Object.fromEntries(
+        this.namedRangesFull = Object.fromEntries(
             this.sheet.getNamedRanges().map(range => [range.getName(), range.getRange()])
         );
+        
+        this.namedRanges = Object.fromEntries(
+            this.sheet.getNamedRanges().map(range => [range.getName(), stripRange(range.getRange())])
+        )
 
         this.namedColumns = Object.fromEntries(
             this.sheet.getNamedRanges().map(range => [
                 range.getName(), 
-                getNamedRangeAdvancedOptions(range.getName())
+                flatten(stripRange(range.getRange(), {values: true}))
             ]) 
         );
     } 
+
+    range(target) {
+        if (!target) throw new Error('.range given empty target');
+        
+        if (typeof target === 'string') {
+            return this.namedRanges[target];
+        }
+        
+        if (typeof target === 'number') {
+            return this.getRange(1, target, this.getLastRow());
+        }
+        
+        throw new Error(`Invalid target type: ${typeof target}`);
+    }
+
+    col(target) {
+        if (!target) throw new Error('.col given empty target');
+        
+        if (typeof target === 'string') {
+            return this.namedColumns[target];
+        }
+        
+        if (typeof target === 'number') {
+            return stripRange(this.getRange(1, target, this.getLastRow()), {values: true});
+        }
+        
+        throw new Error(`Invalid target type: ${typeof target}`);
+    }
 
     getLastRow() {
         return this.sheet.getLastRow();
@@ -77,60 +109,9 @@ class SheetHelper
         );
     }
     
-    /**
-     * Returns a modified version of ae range depending on the options specified.
-     *
-     * @param   {String}  name         = the name of the NamedRange to search for.
-     * @param   {Object}  options.     = {
-     * @param   {Boolean} values           Default: False, see @returns below. 
-     * @param   {Boolean} hideHeader       Default: True, removes header rows from range.
-     * @param   {Boolean} hideEmpty        Default: True, removes empty rows after populated range.
-     *                                   } 
-     * @returns {Any}                ==> Either returns a Range or Array of values,
-     *                                   depending on whether options.values flag is true.                                             
-     */
-    getNamedRangeAdvancedOptions(name, options = undefined) 
-    {   
-        // Use default options if none provided.
-        options = 
-        {   
-            'values':      false,
-            'hideHeader':  true, 
-            'hideEmpty':   true,
-            ...options  // user inputs will override defaults.
-        };
-
-        // Match by name of range
-        const range = this.namedRanges.find((NR) => NR.getName() === name ) 
-            .getRange();
-
-        // Return early if all options are false
-        if (Object.values(options).every(v => !v)) return range;
-
-        // === Build a getRange() query (row, col, numRows, numCols) === //
-        
-        // Cols are easy
-        const startCol   = range.getColumn();
-        const endCol     = range.getLastColumn();
-        const numColumns = range.getNumColumns();
-
-        // Rows depend on 'options' settings
-        // If hideHeader, exclude frozen rows.
-        const startRow = (options.hideHeader === true) ?
-            Math.max(
-                sheet.getFrozenRows() + 1, 
-                range.getRow()
-            ) 
-            : range.getRow();
-
-        // If !hideEmpty, we end the range at the last non-empty row. 
-        const endRow = (options.hideEmpty === true) ?
-            getLastRowInArea(startCol, endCol) : range.getLastRow();``
-
-        const numRows = (endRow - startRow) + 1;
-
-        const result = sheet.getRange(startRow, startCol, numRows, numColumns);     
-        return (options.values === true) ? result : result.getValues();
+    getNamedRangeAdvancedOptions(name, options = {}) {
+        const range = this.namedRanges[name];
+        return stripRange(range, options);
     }
 
     static deleteRowIf(column, value) {
@@ -171,6 +152,48 @@ function getLastRow(sheet, columnIndex)
       .reverse()                // Search from bottom-up
       .findIndex(c=>c[0]!='')   // Take only the first element
     ;  
+}
+
+/**
+ * Returns a range with headers and/or trailing empty rows removed.
+ *
+ * @param   {Range}   range                 = The range to modify
+ * @param   {Object}  options               = Configuration options
+ * @param   {Boolean} options.stripHeaders .. Remove frozen rows from top (default: true)
+ * @param   {Boolean} options.stripEmpty   .. Remove empty rows from bottom (default: true)
+ * @param   {Boolean} options.values       .. Return values instead of range (default: false)
+ * @returns {Range|Array}                 ==> Modified range or its values
+ */
+function stripRange(range, options = {}) {
+    const {
+        stripHeaders = true,
+        stripEmpty = true,
+        values = false
+    } = options;
+
+    // Return early if no modifications needed
+    if (!stripHeaders && !stripEmpty) {
+        return values ? range.getValues() : range;
+    }
+
+    const sheet = range.getSheet();
+    const startCol = range.getColumn();
+    const numColumns = range.getNumColumns();
+
+    // Calculate start row (skip headers if requested)
+    const startRow = stripHeaders 
+        ? Math.max(sheet.getFrozenRows() + 1, range.getRow())
+        : range.getRow();
+
+    // Calculate end row (trim empty rows if requested)
+    const endRow = stripEmpty
+        ? getLastRow(sheet, startCol)
+        : range.getLastRow();
+
+    const numRows = Math.max(1, endRow - startRow + 1);
+
+    const result = sheet.getRange(startRow, startCol, numRows, numColumns);
+    return values ? result.getValues() : result;
 }
 
 function getNamedRange(name, options = undefined) 

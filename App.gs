@@ -1,103 +1,128 @@
+function initializeSheets() {
+    return {
+      Database:  new SheetHelper('Persistent Database'),
+      Groceries: new SheetHelper('Grocery List'),
+      Import:    new SheetHelper('Costco Import'),
+      Inventory: new SheetHelper('Apartment Inventory'),
+      Meta:      new SheetHelper('Metadata'),
+      Recipes:   new SheetHelper('Recipes'),
+      };
+}
+
+const IMPORT_HEADER_ROWS = importSheet('Costco Import').getFrozenRows();
+const DATABASE_HEADER_ROWS = importSheet('Persistent Database').getFrozenRows();
+
 // Validation string used for checking IDs against persistent database
+// ID if valid, False if not found, 
 const VAL_STR = 
 `=IF(
-  AND( 
-    G3="E",H3<>"",
-    NOT(XLOOKUP(
-      H3,
-      DB_Item_ID,
-      DB_Item_ID,
-      FALSE
-    ))
-  ),
-  FALSE,
-  TRUE
+    AND(
+        INDEX(
+          IMPORT_Item_ID,   ROW() - ${IMPORT_HEADER_ROWS}
+        )<>"",
+        INDEX(
+          IMPORT_Item_Label, ROW() - ${IMPORT_HEADER_ROWS}
+        )<>"",
+        INDEX(
+          IMPORT_Price,     ROW() - ${IMPORT_HEADER_ROWS}
+        )<>"",
+    ), 
+    IFERROR(
+        MATCH(
+            INDEX(
+              IMPORT_Item_ID, ROW() - ${IMPORT_HEADER_ROWS}
+            ), 
+            DB_Item_ID, 0
+        ),
+        FALSE
+    )
 )`;
-
-
-// named ranges
-const PURCHLOC = 'IMPORT_Source';
 
 const TODAY = new Date().toJSON().slice(0, 10);
 
-function appendMissingImportedPurchases() 
-{
+function findValidItems() {
+    // create SheetHelpers for Database and Import sheets
+    const { Database, Import } = initializeSheets();
+    
+    // return value 
     const result = {'newItems': [], 'validItems': [], 'errorMessage': ''};
 
     try 
     { 
-        const sheets = {
-        'Import':   new SheetHelper('Costco Import'),
-        'Database': new SheetHelper('Persistent Database')
-        };
-        
-        const validationColumn = sheets['Import'].namedRanges['IMPORT_Valid'];                  // Check if item ID already exists in persistent database...
-        validationColumn.setFormula(VAL_STR);                                   // ...using the formula above to ID-match.
-        
-        const OHI = sheets['Import'].getHeaderRows();
-        const OHDR = sheets['Database'].getHeaderRows();
+        const validationColumn = Import.range('IMPORT_Valid');
+        const importIDs        = Import.col('IMPORT_Item_ID');
 
-        const newData = sheets['Import'].getData().getValues();
-        const oldData = sheets['Database'].getData().getValues();
-        
-        const databaseIDs = sheets['Database'].namedRanges['DB_Item_ID'];
-        const valid = flatten(validationColumn.getRange());
+        Import.getRange(
+            validationColumn.getRow(),
+            validationColumn.getColumn(),
+            importIDs.length
+        ).setFormula(VAL_STR);                                   
+         
+        const valid = flatten(validationColumn.getValues());
 
-        for (var i = 0; i < newData.length; i++)                      // Copy all validated rows, 1 row at a time
+        // Copy all validated rows to the input area, 1 row at a time
+        for (var i = 0; i < importIDs.length; i++)                      
         {
-            sheets['Import'].clearCells( i + (OHI + 1), 1,  1, 5 );   // clear input.
+            const activeRow = (IMPORT_HEADER_ROWS + 1) + i;
+            Import.clearCells( activeRow, 1,  1, 5 );   // clear input.
 
-            // valid = match found in DB; !valid = no match found (new item)  
+            // Skip empty rows
+            if (valid[i] === '') { continue; } 
+            
+            // Create a new item if no valid match  
             if (!valid[i]) 
             { 
                 result.newItems.push({
-                    'itemID': sheets['Import'].namedRanges['IMPORT_Item_ID'][i],
-                    'row': i + (OHI + 1) 
+                    'itemID': Import.col('IMPORT_Item_ID')[i],
+                    'row': activeRow
                 });
                 continue; 
             }
 
             const item = { 
-                'name':      newData[i][sheets['Import'].namedRanges['IMPORT_Item_Name'].getColumn()],
-                'category':  newData[i][sheets['Import'].namedRanges['IMPORT_Category'].getColumn()],
-                'quantity':  newData[i][sheets['Import'].namedRanges['IMPORT_Quantity'].getColumn()],
-                'unit':      newData[i][sheets['Import'].namedRanges['IMPORT_Unit'].getColumn()],
-                'lastPrice': newData[i][sheets['Import'].namedRanges['IMPORT_Last_Price'].getColumn()],
-                'valid':     newData[i][sheets['Import'].namedRanges['IMPORT_Valid'].getColumn()],
-                'id':        newData[i][sheets['Import'].namedRanges['IMPORT_Item_ID'].getColumn()],
-                'label':     newData[i][sheets['Import'].namedRanges['IMPORT_Item_Label'].getColumn()],
-                'purchday':  newData[i][sheets['Import'].namedRanges['IMPORT_Date_Purchased'].getColumn()],
-                'purchloc':  newData[i][sheets['Import'].namedRanges['IMPORT_Source'].getColumn()],
-                'row':       i + (OHI + 1),
+                'name':      Import.col('IMPORT_Item_Name')[i],
+                'category':  Import.col('IMPORT_Category')[i],
+                'quantity':  Import.col('IMPORT_Quantity')[i],
+                'unit':      Import.col('IMPORT_Unit')[i],
+                'lastPrice': Import.col('IMPORT_Last_Price')[i],
+                'valid':     Import.col('IMPORT_Valid')[i],
+                'id':        Import.col('IMPORT_Item_ID')[i],
+                'label':     Import.col('IMPORT_Item_Label')[i],
+                'purchday':  Import.col('IMPORT_Date_Purchased')[i],
+                'purchloc':  Import.col('IMPORT_Source')[i],
+                'row':       activeRow,
                 'match':     undefined
             };
             
-            const row = databaseIDs.createTextFinder(item.id).findNext().getRow();
+            const foundRow = valid[i] - DATABASE_HEADER_ROWS;
 
             const databaseItem = {
-                'category':  oldData[row][sheets['Database'].namedRanges['DB_Category'].getColumn()],
-                'quantity':  oldData[row][sheets['Database'].namedRanges['DB_Quantity'].getColumn()],
-                'unit':      oldData[row][sheets['Database'].namedRanges['DB_Unit'].getColumn()],
-                'name':      oldData[row][sheets['Database'].namedRanges['DB_Item_Name'].getColumn()],
-                'lastPrice': oldData[row][sheets['Database'].namedRanges['DB_Price'].getColumn()],
-                'id':        oldData[row][sheets['Database'].namedRanges['DB_Item_ID'].getColumn()],
-                'label':     oldData[row][sheets['Database'].namedRanges['DB_Item_Abbrv'].getColumn()],
-                'purchday':  oldData[row][sheets['Database'].namedRanges['DB_Last_Purchased'].getColumn()],
-                'purchloc':  oldData[row][sheets['Database'].namedRanges['DB_Location_Purchased'].getColumn()],
-                'row':       row,
-                'match':     item
+                'row':       foundRow,
+                'match':     item,
+                'category':  Database.col('DB_Category')[foundRow],
+                'quantity':  Database.col('DB_Quantity')[foundRow],
+                'unit':      Database.col('DB_Unit')[foundRow],
+                'name':      Database.col('DB_Item_Name')[foundRow],
+                'lastPrice': Database.col('DB_Price')[foundRow],
+                'id':        Database.col('DB_Item_ID')[foundRow],
+                'label':     Database.col('DB_Item_Abbrv')[foundRow],
+                'purchday':  Database.col('DB_Last_Purchased')[foundRow],
+                'purchloc':  Database.col('DB_Location_Purchased')[foundRow]
             }
 
             item.match = databaseItem;
             
             // copy database item into working area
             const copyKeys = ['name', 'category', 'quantity', 'unit', 'lastPrice'];
-            const targetRange = sheets['Import'].getRange(item.row, 1, 1, 5);
+            const targetRange = Import.getRange(item.row, 1, 1, 5);
 
             const copied = copyValuesToRange(targetRange, copyKeys, databaseItem, item);
             
-            result.validItems.push(item);
+            if (copied) { 
+                result.validItems.push(item); 
+            }
         }
+        return result;
     }
     catch (e) 
     {
@@ -159,11 +184,11 @@ function blah () {
 
 function formatPastedRows() 
 {
+    const { Import } = initializeSheets();
     const result = {'processedData': [], 'errorMessage': ''};
     try {
-        const sheet = new SheetHelper('Costco Import');
 
-        const purchasedLoc  = sheet.namedRanges[PURCHLOC].getValues()[0][0];
+        const purchasedLoc  = Import.col('IMPORT_Source')[0];
 
         switch (purchasedLoc.toString().toUpperCase()) {
             case 'COSTCO': 
@@ -189,32 +214,32 @@ function formatPastedRows()
 
 
 function lookupIDsInPersistentDatabase() {
-  const result = {'successfulMatches': 0, 'errorMessage': ''};
+    const result = {'successfulMatches': 0, 'errorMessage': ''};
 
-  const lastRow_IMPORT = getLastRow(sheet_IMPORT, ID_COLUMN_IMPORT);             // Find the last row of ID column
-   
-  const col_Validation_IMPORT = sheet_IMPORT.getRange('F3:F' + lastRow_IMPORT);  // Check if item ID already exists in persistent database...
-  col_Validation_IMPORT.setFormula(VALFXNSTR);
-
-  const valid = [].concat(...col_Validation_IMPORT.getValues());                 // Create new 1D array
-
-  for (let i = 0; i < valid.length; i++) {
-    const inputRange = sheet_IMPORT.getRange((i+1),1, 1,4)
+    const lastRow_IMPORT = getLastRow(sheet_IMPORT, ID_COLUMN_IMPORT);             // Find the last row of ID column
     
-    if (valid[i] !== 'ADD') { inputRange.clear(); continue; }
+    const col_Validation_IMPORT = sheet_IMPORT.getRange('F3:F' + lastRow_IMPORT);  // Check if item ID already exists in persistent database...
+    col_Validation_IMPORT.setFormula(VALFXNSTR);
 
+    const valid = [].concat(...col_Validation_IMPORT.getValues());                 // Create new 1D array
+
+    for (let i = 0; i < valid.length; i++) {
+        const inputRange = sheet_IMPORT.getRange((i+1),1, 1,4)
+        
+        if (valid[i] !== 'ADD') { inputRange.clear(); continue; }
+
+        
+    }
     
-  }
-  
-  return result;
+    return result;
 }
 
 function main() {
-  const result = appendMissingImportedPurchases();
+    const result = appendMissingImportedPurchases();
 
-  if (result.addedRows > 0) {
-    return SpreadsheetApp.getActive().toast("Added " + result.addedRows + " new item IDs.", "Append to Database");
-  }
+    if (result.addedRows > 0) {
+        return SpreadsheetApp.getActive().toast("Added " + result.addedRows + " new item IDs.", "Append to Database");
+    }
 
-  return SpreadsheetApp.getActive().toast('Unable to update Database:' + result.errorMessage, "Append Failed");
+    return SpreadsheetApp.getActive().toast('Unable to update Database:' + result.errorMessage, "Append Failed");
 }
